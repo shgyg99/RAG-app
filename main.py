@@ -13,10 +13,26 @@ from custom_types import *
 
 load_dotenv()
 
+
+def _strip_api_version(url: str) -> str:
+    return url.rstrip("/").removesuffix("/v1")
+
+
+def _inngest_origin() -> str:
+    return _strip_api_version(os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288"))
+
+
+def _inngest_event_origin() -> str:
+    return _strip_api_version(os.getenv("INNGEST_EVENT_API_BASE", _inngest_origin()))
+
+
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
     is_production=False,
+    api_base_url=_inngest_origin(),
+    event_api_base_url=_inngest_event_origin(),
+    request_timeout=int(os.getenv("INNGEST_REQUEST_TIMEOUT_MS", "60000")),
     serializer=inngest.PydanticSerializer()
 )
 
@@ -40,8 +56,11 @@ async def rag_ingest_pdf(ctx: inngest.Context):
         Qdrant_storage().upsert(ids, vecs, payloads)
         return RAGUpsertResult(ingested=len(chunks))
     
-    chunks_and_src = await ctx.step.run("load-and-chunk", lambda: _load(ctx), output_type=RAGChunkAndSrc)
-    ingested = await ctx.step.run("embed-and-upsert", lambda: _upsert(chunks_and_src), output_type=RAGUpsertResult)
+    try:
+        chunks_and_src = await ctx.step.run("load-and-chunk", lambda: _load(ctx), output_type=RAGChunkAndSrc)
+        ingested = await ctx.step.run("embed-and-upsert", lambda: _upsert(chunks_and_src), output_type=RAGUpsertResult)
+    except Exception as exc:
+        return {"ingested": 0, "error": str(exc)}
     return ingested.model_dump()
 
 @inngest_client.create_function(
@@ -58,7 +77,15 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     question = ctx.event.data["question"]
     top_k = int(ctx.event.data.get("top_k", 5))
     
-    found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
+    try:
+        found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
+    except Exception as exc:
+        return {
+            "answer": "",
+            "sources": [],
+            "num_contexts": 0,
+            "error": str(exc),
+        }
 
     context_block = "\n\n".join(f"- {c}" for c in found.contexts)
     user_content = (
@@ -74,18 +101,26 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         model=os.getenv("API_MODEL")
     )
     
-    res = await ctx.step.ai.infer(
-        "llm-answer",
-        adapter=adapter,
-        body={
-            "max_tokens": 1024,
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": "Answer the question based on the context provided. If the context does not contain the answer, say 'I don't know'."},
-                {"role": "user", "content": user_content}
-            ]
+    try:
+        res = await ctx.step.ai.infer(
+            "llm-answer",
+            adapter=adapter,
+            body={
+                "max_tokens": 1024,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": "Answer the question based on the context provided. If the context does not contain the answer, say 'I don't know'."},
+                    {"role": "user", "content": user_content}
+                ]
+            }
+        )
+    except Exception as exc:
+        return {
+            "answer": "",
+            "sources": found.sources,
+            "num_contexts": len(found.contexts),
+            "error": str(exc),
         }
-    )
     
     answer = res["choices"][0]["message"]["content"].strip()
     return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}

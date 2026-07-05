@@ -1,4 +1,4 @@
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from llama_index.readers.file import PDFReader
 from llama_index.core.node_parser import SentenceSplitter
 from dotenv import load_dotenv
@@ -9,7 +9,7 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 API_URL = os.getenv("API_URL")
 
-client_kwargs = {"api_key": API_KEY} if API_KEY else None
+client_kwargs = {"api_key": API_KEY, "timeout": float(os.getenv("OPENAI_TIMEOUT", "60"))} if API_KEY else None
 if client_kwargs and API_URL:
     client_kwargs["base_url"] = API_URL
 
@@ -28,8 +28,15 @@ def load_and_chunk_pdf(path: str):
     return chunks
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(
-        model=EMBED_MODEL,
-        input=texts
-    )
+    if client is None:
+        raise RuntimeError("API_KEY is not configured for embeddings.")
+    if not texts:
+        return []
+    try:
+        response = client.embeddings.create(
+            model=EMBED_MODEL,
+            input=texts
+        )
+    except OpenAIError as exc:
+        raise RuntimeError(f"Embedding request failed for model {EMBED_MODEL}: {exc}") from exc
     return [item.embedding for item in response.data]
