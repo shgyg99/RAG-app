@@ -29,6 +29,8 @@ The app uses:
 |-- data_loader.py      # PDF loading, chunking, and embeddings
 |-- vector_db.py        # Qdrant wrapper
 |-- custom_types.py     # Pydantic models for workflow outputs
+|-- Dockerfile          # Python image for FastAPI and Streamlit
+|-- docker-compose.yml  # Local dev stack
 |-- pyproject.toml      # Python dependencies
 |-- uv.lock             # Locked dependency versions
 `-- README.md
@@ -36,11 +38,10 @@ The app uses:
 
 ## Requirements
 
-- Python 3.12+
-- `uv`
-- Docker, for local Qdrant
-- Node.js/npm, for `npx inngest-cli`
+- Docker Desktop with Docker Compose
 - An OpenAI-compatible API key and base URL
+
+Python, `uv`, and Node.js are only needed if you choose to run the services manually outside Docker.
 
 ## Environment Variables
 
@@ -55,6 +56,7 @@ EMBED_MODEL=text-embedding-3-large
 INNGEST_API_BASE=http://127.0.0.1:8288
 INNGEST_EVENT_API_BASE=http://127.0.0.1:8288
 INNGEST_REQUEST_TIMEOUT_MS=60000
+QDRANT_URL=http://127.0.0.1:6333
 OPENAI_TIMEOUT=60
 ```
 
@@ -64,59 +66,105 @@ Notes:
 - `EMBED_MODEL=text-embedding-3-large` creates 3072-dimensional vectors.
 - If you change the embedding model to a 1536-dimensional model, recreate the Qdrant collection or update the vector dimension.
 - Do not commit `.env`; it contains secrets and is ignored by Git.
+- Docker Compose overrides service-to-service URLs internally:
+  - `INNGEST_API_BASE=http://inngest:8288`
+  - `INNGEST_EVENT_API_BASE=http://inngest:8288`
+  - `QDRANT_URL=http://qdrant:6333`
 
 ## Install Dependencies
 
-```powershell
-uv sync
+Docker installs the Python dependencies from `pyproject.toml` and `uv.lock` while building the app image:
+
+```dockerfile
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 ```
 
-## Start Qdrant
+You do not need to run `uv sync` on your host machine for Docker-based usage.
 
-PowerShell:
+## Run with Docker
 
-```powershell
-docker run -d --name qdrant -p 6333:6333 -v "${PWD}\qdrant_storage:/qdrant/storage" qdrant/qdrant
-```
-
-If the container already exists:
-
-```powershell
-docker start qdrant
-```
-
-Qdrant will be available at:
-
-```text
-http://localhost:6333
-```
-
-## Run the App
-
-Use three terminals from the project root.
-
-Terminal 1: FastAPI worker
+Build and start the full stack:
 
 ```powershell
-uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+docker compose up --build
 ```
 
-Terminal 2: Inngest dev server
+Or run it in the background:
 
 ```powershell
-npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
+docker compose up --build -d
 ```
 
-Terminal 3: Streamlit UI
+This starts:
 
-```powershell
-uv run streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8501
-```
+- Qdrant on `http://127.0.0.1:6333`
+- FastAPI worker on `http://127.0.0.1:8000`
+- Inngest dev server on `http://127.0.0.1:8288`
+- Streamlit UI on `http://127.0.0.1:8501`
 
 Open:
 
 ```text
 http://127.0.0.1:8501
+```
+
+## Docker Commands
+
+Stop the stack:
+
+```powershell
+docker compose down
+```
+
+Rebuild after changing dependencies or the Dockerfile:
+
+```powershell
+docker compose build
+docker compose up
+```
+
+Restart one service:
+
+```powershell
+docker compose restart api
+docker compose restart streamlit
+docker compose restart inngest
+docker compose restart qdrant
+```
+
+Watch logs:
+
+```powershell
+docker compose logs -f
+docker compose logs -f api
+docker compose logs -f inngest
+docker compose logs -f streamlit
+docker compose logs -f qdrant
+```
+
+Check container status:
+
+```powershell
+docker compose ps
+```
+
+Open a shell inside the Python app container:
+
+```powershell
+docker compose exec api sh
+```
+
+Remove stopped containers and the Compose network:
+
+```powershell
+docker compose down
+```
+
+Remove containers and anonymous volumes. This does not remove the bind-mounted `qdrant_storage/` folder:
+
+```powershell
+docker compose down -v
 ```
 
 ## Usage
@@ -132,10 +180,10 @@ http://127.0.0.1:8501
 
 The Inngest dev server is not running or is not reachable on port `8288`.
 
-Start it with:
+Restart it with Docker Compose:
 
 ```powershell
-npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
+docker compose restart inngest
 ```
 
 Also make sure FastAPI is running on port `8000`.
@@ -162,6 +210,16 @@ Use HTTP, not HTTPS:
 INNGEST_API_BASE=http://127.0.0.1:8288
 ```
 
+Inside Docker Compose, service-to-service URLs use service names instead:
+
+```env
+INNGEST_API_BASE=http://inngest:8288
+INNGEST_EVENT_API_BASE=http://inngest:8288
+QDRANT_URL=http://qdrant:6333
+```
+
+These Docker-specific values are already set in `docker-compose.yml`.
+
 ### `QdrantClient` has no attribute `search`
 
 This project uses the newer Qdrant client API:
@@ -184,7 +242,7 @@ Check:
 You can smoke-test embeddings with:
 
 ```powershell
-uv run python -c "from data_loader import embed_texts; print(len(embed_texts(['hello'])[0]))"
+docker compose exec api python -c "from data_loader import embed_texts; print(len(embed_texts(['hello'])[0]))"
 ```
 
 ## Development Notes
@@ -193,6 +251,9 @@ uv run python -c "from data_loader import embed_texts; print(len(embed_texts(['h
 - Qdrant local data is stored in `qdrant_storage/`.
 - Runtime logs, uploads, local vector storage, virtual environments, and `.env` are ignored by Git.
 - `uv.lock` should be committed for reproducible installs.
+- FastAPI and Streamlit use the same Python Docker image.
+- Inngest uses the official `inngest/inngest` Docker image.
+- Source code is bind-mounted into the app containers for local development.
 
 ## Quick Health Check
 

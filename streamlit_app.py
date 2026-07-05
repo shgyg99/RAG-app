@@ -68,15 +68,21 @@ st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type="pdf", accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion..."):
-        path = save_uploaded_pdf(uploaded)
-        try:
-            asyncio.run(send_rag_ingest_event(path))
-        except Exception as exc:
-            st.error(f"Failed to send ingest event: {exc}")
-            st.stop()
-        time.sleep(0.3)
-    st.success(f"PDF '{path.name}' uploaded and ingestion triggered successfully!")
+    upload_signature = (uploaded.name, uploaded.size)
+    if st.session_state.get("last_ingested_upload") != upload_signature:
+        with st.spinner("Uploading and triggering ingestion..."):
+            path = save_uploaded_pdf(uploaded)
+            try:
+                asyncio.run(send_rag_ingest_event(path))
+            except Exception as exc:
+                st.error(f"Failed to send ingest event: {exc}")
+                st.stop()
+            st.session_state["last_ingested_upload"] = upload_signature
+            st.session_state["last_uploaded_pdf_name"] = path.name
+            time.sleep(0.3)
+        st.success(f"PDF '{path.name}' uploaded and ingestion triggered successfully!")
+    else:
+        st.success(f"PDF '{st.session_state.get('last_uploaded_pdf_name', uploaded.name)}' is already queued for ingestion.")
     st.caption("You can upload another PDF at any time.")
     
 st.divider()
